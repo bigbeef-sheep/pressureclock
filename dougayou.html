@@ -212,7 +212,7 @@
 
     // --- 実時間計測用の変数 ---
     let startTime = 0;
-    let accumulatedMsAtLastStop = 0; // 前回ストップ（またはパス）した時点の累積時間
+    let accumulatedMsAtLastStop = 0; // 全プレイヤーの合計消費時間(ms)
 
     const canvas = document.getElementById('timeChart');
     const ctx = canvas.getContext('2d');
@@ -249,6 +249,7 @@
         maxTime = parseInt(document.getElementById('input-total-time').value) || 10;
         timeLeft = maxTime;
         accumulatedMsAtLastStop = 0;
+        usedTimes = [];
         
         const container = document.getElementById('timeline-settings');
         container.innerHTML = '';
@@ -352,7 +353,7 @@
 
         if (isRunning && stopCount < totalPlayers) {
             const totalSpentBefore = usedTimes.reduce((a,b)=>a+b, 0);
-            const thisTurnSpent = (maxTime - timeLeft) - totalSpentBefore;
+            const thisTurnSpent = Math.max(0, (maxTime - timeLeft) - totalSpentBefore);
             const slice = (thisTurnSpent / maxTime) * (Math.PI * 2);
             drawSeg(currentAngle, slice, playerConfigs[stopCount].color, 1.0);
         }
@@ -363,8 +364,9 @@
         const thisTurnSpent = (maxTime - timeLeft) - totalSpentBefore;
         usedTimes.push(parseFloat(thisTurnSpent.toFixed(2)));
         
-        // 累積時間を現在の実時間経過分に更新
+        // 累積時間を今の合計消費時間に更新し、次ターンのための開始時刻を今にリセットする
         accumulatedMsAtLastStop = (maxTime - timeLeft) * 1000;
+        startTime = Date.now(); 
 
         const item = document.createElement('div');
         item.className = 'record-item';
@@ -402,12 +404,11 @@
                 duration: parseFloat(div.querySelector('input[type="number"]').value) || 0
             }));
 
-            // 実時間計測開始
             startTime = Date.now();
 
             timerId = setInterval(() => {
                 const currentTime = Date.now();
-                const elapsedSinceStart = currentTime - startTime;
+                const elapsedSinceStart = currentTime - startTime; // このターン(P)が始まってからのms
                 const totalElapsedMs = accumulatedMsAtLastStop + elapsedSinceStart;
                 
                 timeLeft = maxTime - (totalElapsedMs / 1000);
@@ -419,7 +420,6 @@
                     return;
                 }
 
-                // 現在のプレイヤーが設定された持ち時間を使い果たしたかチェック
                 const totalSpentBefore = usedTimes.reduce((a,b)=>a+b, 0);
                 const currentTurnTime = (maxTime - timeLeft) - totalSpentBefore;
                 
