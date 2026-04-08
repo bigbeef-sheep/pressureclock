@@ -191,68 +191,271 @@
 </div>
 
 <script>
-const CLOCK_IMAGE_URL = "Screenshot 2026-04-01 18.17.26.png"; 
+    const CLOCK_IMAGE_URL = "Screenshot 2026-04-01 18.17.26.png"; 
     document.getElementById('clock-image-bg').style.backgroundImage = `url('${CLOCK_IMAGE_URL}')`;
 
-        // --- 実行ロジック (実時間ベースに修正) ---
+    const segMap = {
+        '0': [1,1,1,1,1,1,0], '1': [0,1,1,0,0,0,0], '2': [1,1,0,1,1,0,1],
+        '3': [1,1,1,1,0,0,1], '4': [0,1,1,0,0,1,1], '5': [1,0,1,1,0,1,1],
+        '6': [1,0,1,1,1,1,1], '7': [1,1,1,0,0,1,0], '8': [1,1,1,1,1,1,1],
+        '9': [1,1,1,1,0,1,1], ' ': [0,0,0,0,0,0,0]
+    };
+
+    let totalPlayers = 4;
+    let maxTime = 40;
+    let timeLeft = 40;
+    let stopCount = 0;
+    let isRunning = false;
+    let timerId = null;
+    let usedTimes = []; 
+    let playerConfigs = []; 
+
+    // --- 実時間計測用の変数 ---
     let startTime = 0;
-    let pausedTime = 0; // 一時停止用
+    let accumulatedMsAtLastStop = 0; // 前回ストップ（またはパス）した時点の累積時間
 
-    function startTimer() {
-        if (isRunning) {
-            // 一時停止処理
-            clearInterval(timerId);
-            isRunning = false;
-            pausedTime += Date.now() - startTime; // これまで経過した実時間を蓄積
-            startBtn.textContent = "RESUME";
-            startBtn.classList.remove('running');
-        } else {
-            if (timeLeft <= 0) {
-                initTimer();
-                pausedTime = 0;
+    const canvas = document.getElementById('timeChart');
+    const ctx = canvas.getContext('2d');
+    const actionBtn = document.getElementById('action-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    const hand = document.getElementById('hand');
+    const recordsList = document.getElementById('records-list');
+    const displayContainer = document.getElementById('main-display');
+
+    function saveToStorage() {
+        const data = {
+            totalPlayers: document.getElementById('input-players').value,
+            maxTime: document.getElementById('input-total-time').value,
+            playerConfigs: Array.from(document.querySelectorAll('.player-config')).map(div => ({
+                color: div.querySelector('input[type="color"]').value,
+                duration: div.querySelector('input[type="number"]').value
+            }))
+        };
+        localStorage.setItem('stopGameConfig', JSON.stringify(data));
+    }
+
+    function initSettings() {
+        let inputP = parseInt(document.getElementById('input-players').value);
+        let inputT = parseInt(document.getElementById('input-total-time').value);
+        const savedData = JSON.parse(localStorage.getItem('stopGameConfig'));
+        
+        if (savedData && !isRunning && !window.alreadyLoaded) {
+            document.getElementById('input-players').value = savedData.totalPlayers;
+            document.getElementById('input-total-time').value = savedData.maxTime;
+            window.alreadyLoaded = true;
+        }
+
+        totalPlayers = parseInt(document.getElementById('input-players').value) || 1;
+        maxTime = parseInt(document.getElementById('input-total-time').value) || 10;
+        timeLeft = maxTime;
+        accumulatedMsAtLastStop = 0;
+        
+        const container = document.getElementById('timeline-settings');
+        container.innerHTML = '';
+        playerConfigs = [];
+
+        const defaultColors = ['#2ed573', '#ff4757', '#1e90ff', '#feca57', '#e67e22', '#ae22ff'];
+        const perPlayerTime = (maxTime / totalPlayers).toFixed(1);
+
+        for(let i=0; i<totalPlayers; i++) {
+            let color = defaultColors[i % defaultColors.length];
+            let duration = perPlayerTime;
+            if (savedData && savedData.playerConfigs && savedData.playerConfigs[i]) {
+                color = savedData.playerConfigs[i].color;
+                duration = savedData.playerConfigs[i].duration;
             }
-            isRunning = true;
-            startBtn.textContent = "PAUSE";
-            startBtn.classList.add('running');
-            msgEl.textContent = "";
-            
-            // 開始時刻を記録
-            startTime = Date.now();
+            playerConfigs.push({ color: color, duration: parseFloat(duration) });
+            const div = document.createElement('div');
+            div.className = 'player-config';
+            div.innerHTML = `
+                <input type="color" value="${color}" onchange="saveToStorage()">
+                <span style="font-size:0.7rem">P${i+1}</span>
+                <input type="number" value="${duration}" step="0.1" style="width:45px" onchange="saveToStorage()">
+                <span style="font-size:0.6rem">s</span>
+            `;
+            container.appendChild(div);
+        }
+        setupDisplayDigits();
+        drawVisuals();
+        document.getElementById('target-players').textContent = totalPlayers;
+        saveToStorage(); 
+    }
 
-            timerId = setInterval(() => {
-                // 「今この瞬間」と「開始した瞬間」の差分を計算
-                const currentTime = Date.now();
-                const elapsedTotal = (currentTime - startTime + pausedTime) / 1000;
-                
-                timeLeft = maxTime - elapsedTotal;
+    function setupDisplayDigits() {
+        displayContainer.innerHTML = '';
+        const needsExtraDigit = maxTime >= 100;
+        const ids = needsExtraDigit ? ['d100', 'd10', 'd1', 'dot', 'df1', 'df2'] : ['d10', 'd1', 'dot', 'df1', 'df2'];
+        ids.forEach(id => {
+            if(id === 'dot') {
+                const dot = document.createElement('div'); dot.className = 'dot';
+                displayContainer.appendChild(dot);
+            } else {
+                const digit = document.createElement('div'); digit.className = 'digit'; digit.id = id;
+                ['a','b','c','d','e','f','g'].forEach(s => {
+                    const seg = document.createElement('div'); seg.className = `segment seg-${s}`;
+                    digit.appendChild(seg);
+                });
+                displayContainer.appendChild(digit);
+            }
+        });
+    }
 
-                if (timeLeft <= 0) {
-                    timeLeft = 0;
-                    clearInterval(timerId);
-                    isRunning = false;
-                    pausedTime = 0;
-                    startBtn.textContent = "START";
-                    startBtn.classList.remove('running');
-                    msgEl.textContent = "FINISH";
-                    msgEl.style.color = document.getElementById('color-ring').value;
-                }
-                drawVisuals();
-            }, 16); // 16ms(約60fps)程度がスマホの描画負荷的にも最適です
+    function drawDigit(id, val) {
+        const el = document.getElementById(id);
+        if(!el) return;
+        const pattern = segMap[val] || segMap[' '];
+        for(let i=0; i<7; i++) el.children[i].classList.toggle('on', !!pattern[i]);
+    }
+
+    function updateTimerDigits() {
+        const needsExtraDigit = maxTime >= 100;
+        const formatLen = needsExtraDigit ? 6 : 5;
+        const str = (timeLeft || 0).toFixed(2).padStart(formatLen, '0');
+        const chars = str.replace('.', '').split('');
+        if(needsExtraDigit) {
+            drawDigit('d100', chars[0] === '0' ? ' ' : chars[0]);
+            drawDigit('d10', (chars[0] === '0' && chars[1] === '0') ? ' ' : chars[1]);
+            drawDigit('d1', chars[2]);
+            drawDigit('df1', chars[3]); drawDigit('df2', chars[4]);
+        } else {
+            drawDigit('d10', chars[0] === '0' ? ' ' : chars[0]);
+            drawDigit('d1', chars[1]);
+            drawDigit('df1', chars[2]); drawDigit('df2', chars[3]);
         }
     }
 
-    // リセットボタンも初期化
-    document.getElementById('reset-btn').addEventListener('click', () => {
+    function drawVisuals() {
+        updateTimerDigits();
+        hand.style.transform = `rotate(${(maxTime - timeLeft) * (360/maxTime)}deg)`;
+        
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        const outerRadius = 110;
+        const innerRadius = 95;
+        
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        let currentAngle = -Math.PI / 2;
+
+        const drawSeg = (start, slice, color, alpha=1.0) => {
+            ctx.globalAlpha = alpha; ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(cx, cy, outerRadius, start, start + slice);
+            ctx.arc(cx, cy, innerRadius, start + slice, start, true);
+            ctx.fill();
+        };
+
+        usedTimes.forEach((time, i) => {
+            const slice = (time / maxTime) * (Math.PI * 2);
+            drawSeg(currentAngle, slice, playerConfigs[i].color);
+            currentAngle += slice;
+        });
+
+        if (isRunning && stopCount < totalPlayers) {
+            const totalSpentBefore = usedTimes.reduce((a,b)=>a+b, 0);
+            const thisTurnSpent = (maxTime - timeLeft) - totalSpentBefore;
+            const slice = (thisTurnSpent / maxTime) * (Math.PI * 2);
+            drawSeg(currentAngle, slice, playerConfigs[stopCount].color, 1.0);
+        }
+    }
+
+    function nextPlayer() {
+        const totalSpentBefore = usedTimes.reduce((a,b)=>a+b, 0);
+        const thisTurnSpent = (maxTime - timeLeft) - totalSpentBefore;
+        usedTimes.push(parseFloat(thisTurnSpent.toFixed(2)));
+        
+        // 累積時間を現在の実時間経過分に更新
+        accumulatedMsAtLastStop = (maxTime - timeLeft) * 1000;
+
+        const item = document.createElement('div');
+        item.className = 'record-item';
+        item.innerHTML = `<span><span class="color-dot" style="background:${playerConfigs[stopCount].color}"></span>P${stopCount+1}</span> <span>区間: ${thisTurnSpent.toFixed(2)}s</span> <span>残:${timeLeft.toFixed(2)}s</span>`;
+        recordsList.prepend(item);
+
+        stopCount++;
+
+        if(stopCount >= totalPlayers) {
+            endGame("ALL MISSIONS CLEAR!", "#2ed573");
+        } else {
+            document.getElementById('current-p-label').textContent = stopCount + 1;
+        }
+    }
+
+    function endGame(msg, color) {
         clearInterval(timerId);
         isRunning = false;
-        pausedTime = 0; // ここをリセット
-        startBtn.textContent = "START";
-        startBtn.classList.remove('running');
-        msgEl.textContent = "";
-        initTimer();
+        actionBtn.disabled = true;
+        actionBtn.textContent = "FINISHED";
+        const m = document.getElementById('message');
+        m.textContent = msg; m.style.color = color;
+    }
+
+    actionBtn.addEventListener('click', () => {
+        if(!isRunning) {
+            isRunning = true;
+            saveToStorage();
+            actionBtn.textContent = "STOP / PASS";
+            actionBtn.style.backgroundColor = "#e67e22";
+            document.querySelectorAll('#setup-panel input').forEach(i => i.disabled = true);
+            
+            playerConfigs = Array.from(document.querySelectorAll('.player-config')).map(div => ({
+                color: div.querySelector('input[type="color"]').value,
+                duration: parseFloat(div.querySelector('input[type="number"]').value) || 0
+            }));
+
+            // 実時間計測開始
+            startTime = Date.now();
+
+            timerId = setInterval(() => {
+                const currentTime = Date.now();
+                const elapsedSinceStart = currentTime - startTime;
+                const totalElapsedMs = accumulatedMsAtLastStop + elapsedSinceStart;
+                
+                timeLeft = maxTime - (totalElapsedMs / 1000);
+
+                if(timeLeft <= 0) {
+                    timeLeft = 0; 
+                    drawVisuals(); 
+                    endGame("TIME UP", "#ff4757");
+                    return;
+                }
+
+                // 現在のプレイヤーが設定された持ち時間を使い果たしたかチェック
+                const totalSpentBefore = usedTimes.reduce((a,b)=>a+b, 0);
+                const currentTurnTime = (maxTime - timeLeft) - totalSpentBefore;
+                
+                if(currentTurnTime >= playerConfigs[stopCount].duration) {
+                    nextPlayer();
+                }
+                drawVisuals();
+            }, 16); 
+        } else {
+            nextPlayer();
+            drawVisuals();
+        }
     });
 
+    resetBtn.addEventListener('click', () => {
+        location.reload(); 
+    });
+
+    document.getElementById('timeline-settings').addEventListener('input', (e) => {
+        if(!isRunning && (e.target.type === 'number' || e.target.type === 'color')) {
+            drawVisuals();
+            saveToStorage();
+        }
+    });
+    
+    document.getElementById('input-players').addEventListener('change', () => {
+        if(!isRunning) { initSettings(); saveToStorage(); }
+    });
+    
+    document.getElementById('input-total-time').addEventListener('change', () => {
+        if(!isRunning) { initSettings(); saveToStorage(); }
+    });
+
+    initSettings();
 </script>
+
 
 </body>
 </html>
